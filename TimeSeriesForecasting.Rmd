@@ -1,0 +1,453 @@
+---
+title: "LBB Time Series Analysis Forecasting"
+author: "Francis Yeh"
+date: "18 Apr 2020"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: 
+        collapsed: false
+    number_sections: true
+    theme: flatly
+    highlight: tango
+    css: style1.css
+  fig_caption: no
+  pdf_document:
+    latex_engine: xelatex
+    fig_caption: yes
+---
+
+#  Introduction {.tabset}
+
+
+##  Background
+
+• Is crime generally rising in Chicago in the past decade (last 10 years)?
+
+• Is there a seasonal component to the crime rate?
+
+• Which time series method seems to capture the variation in your time series better? 
+
+Explain your choice of algorithm and its key assumptions
+
+
+Student should be awarded the full (3) points if they address at least 2 of the above questions. The questions are by no means definitive, but can be used as a “guide” in the preparation of your project. The data contains a variety of offenses, but you can sample only a type of crime you’re interested in (eg. theft, narcotic, battery ) .Use visualization if it helps support your narrative.
+
+Tasks
+
+1. Perform preprocessing steps to create a time series object.
+
+2. Demonstrate the analysis process of trend and seasonality using simple plotting tools.
+
+3. Build a forecasting model and explain your choice of algorithm and its key assumptions.
+
+
+##  Data Source
+
+The dataset consists of 7100712 observations and 22 variables from City of Chicago.
+
+https://data.cityofchicago.org/Public-Safety/Crimes-2001-to-present/ijzp-q8t2
+
+
+
+###  Overview of Variables
+
+id:             Unique identifier for the record.
+
+case_number:    The Chicago Police Department Records Division Number, which is unique to the incident.
+
+date:           Date when the incident occurred.
+
+block:          Partially redacted address where the incident occurred.
+
+iucr:           Illinois Uniform Crime Reporting code (directly linked to primary_type and description)
+
+primary_type:   The primary description of the IUCR code.
+
+description:    The secondary description of the IUCR code, a subcategory of the primary description.
+
+location_description:  Description of the location where the incident occurred.
+
+arrest:         Indicates whether an arrest was made.
+
+domestic:       Indicates whether the incident was domestic-related as defined by the Illinois Domestic Violence Act.
+
+beat:           Indicates the police beat where the incident occurred.
+
+district:       Indicates the police district where the incident occurred.
+
+ward:           The ward (City Council district) where the incident occurred.
+
+community_area: Indicates the community area where the incident occurred.
+
+fbi_code:       Indicates the National Incident-Based Reporting System (NIBRS) crime classification. More details can be found in 
+
+x_coordinate:   X coordinate of the incident location (State Plane Illinois East NAD 1983 projection).
+
+y_coordinate:   Y coordinate of the incident location (State Plane Illinois East NAD 1983 projection).
+
+year:           Year the incident occurred.
+
+updated_on:     Date and time the record was last updated.
+
+latitude:       The latitude of the location where the incident occurred.
+
+longitude:      The longitude of the location where the incident occurred.
+
+location:       Concatenation of latitude and longitude.
+
+
+##  Libraries and Setup
+
+
+```{r setup}
+knitr::opts_chunk$set(cache=TRUE)
+options(scipen = 9999)
+```
+
+
+To run the data preparation and the statistical analysis, the following libraries are loaded
+
+
+```{r echo=FALSE}
+suppressMessages(library(Hmisc))
+suppressMessages(library(forecast))
+suppressMessages(library(dplyr))
+suppressMessages(library(prophet))
+suppressMessages(library(ggplot2))
+suppressMessages(library(gganimate))
+suppressMessages(library(plotly))
+suppressMessages(library(data.table))
+suppressMessages(library(lubridate))
+```
+
+
+
+#  Preprocessing
+
+##  Data Table
+```{r}
+
+crimes <- read.csv("data_input/crimes20092019.csv", header=TRUE)
+
+#tail(crimes, 20)
+#str(crimes)
+```
+
+## Checking missing values
+
+```{r}
+#describe(crimes)
+
+```
+
+Primary.Type 
+       n  missing distinct 
+ 3362963        0       34 
+
+lowest : ARSON                             ASSAULT                           BATTERY                           BURGLARY                          CONCEALED CARRY LICENSE VIOLATION
+highest: ROBBERY                           SEX OFFENSE                       STALKING                          THEFT                             WEAPONS VIOLATION     
+
+
+## Processing Date  
+
+```{r }
+crimes$Date0 <-crimes$Date
+crimes$Date1 <-crimes$Date
+crimes$Month <- factor(month(as.POSIXlt(crimes$Date, format="%m/%d/%Y %I:%M:%S %p")))
+crimes$YearMon <- as.factor(format(as.POSIXct(crimes$Date1, format="%m/%d/%Y %I:%M:%S %p"),"%Y-%m"))
+str(crimes)
+```
+
+##  Time Series Data Preparation
+
+We will prepare 2 files, one to analyze and predict the overall crimes in Chicago, and the other to understand the historical trends of the Top 5 Crimes '@Year2009' (namely THEFT, BATTERY, CRIMINAL DAMAGE, NARCOTICS, and BURGLARY) during the period 2009 - 2018.
+
+###  Raw Files
+
+```{r}
+crimesdf <- crimes %>%
+  select("ID","Date","Primary.Type","Year", "Month","YearMon") %>%
+  filter(Year!=2019)
+crimesdf <- as.data.frame(crimesdf)
+#write.csv(crimesdf, "crimesdf.csv")
+ptdf  <- crimesdf %>%    ## Top 5 Crimes Type 
+  filter(Primary.Type %in% c("THEFT","BATTERY", "CRIMINAL DAMAGE", "NARCOTICS", "BURGLARY"))
+ptdf <- as.data.frame(ptdf)
+#write.csv(ptdf, "ptdf.csv")
+str(crimesdf)
+
+```
+
+###  Files for Exploratory Data Analysis
+
+```{r}
+ptdf1 <- ptdf %>%
+  group_by(Primary.Type, Year) %>%
+  count(Year)
+ptdf1 <- as.data.frame(ptdf1)
+#ptdf1$Primary.Type <- as.character(ptdf1$Primary.Type)
+#ptdf1$Year <- as.character(ptdf1$Year)
+#ptdf1$Year <- as.numeric(ptdf1$Year)
+#ptdf1 <- as.data.frame(ptdf1)
+str(ptdf1)
+```
+
+
+```{r}
+ptdf2 <- ptdf %>%
+  group_by(Primary.Type, YearMon) %>%
+  count(YearMon)
+ptdf2 <- as.data.frame(ptdf2)
+
+str(ptdf2)
+```
+
+#  Exploratory Data Analysis
+
+
+Let explore the total no of crimes cases by broad categories using Primary.Type for namely THEFT, BATTERY, CRIMINAL DAMAGE, NARCOTICS, and BURGLARY during the 10 year period 2009 to 2018
+
+```{r echo=FALSE}
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#0072B2")
+scale_colour_manual(name="Primary_Type", values =cbPalette)
+```
+
+The plot for the TOP 5 CRIMES shows varying levels of decline during the period of 2009 and 2015/2016; and stabilizing thereafter. However, for THEFT, it seems to be on an upward trend from 2015 onwards.
+
+```{r}
+## cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#0072B2")
+## scale_colour_manual(name="Primary_Type", values =cbPalette)
+## cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+ptdfplot1  <- ptdf1 %>%
+  ggplot(aes(x=Year, y=n, group=Primary.Type, colour=Primary.Type)) +
+  geom_line() +
+  geom_point(aes(group = seq_along(Year))) +
+  scale_colour_manual(values=cbPalette) +
+  ggtitle ("Top 5 Crime Trends During 2009 - 2018") +
+  theme(legend.position='bottom') +
+  transition_reveal(Year)
+ 
+```
+
+
+```{r}
+ptdfplot1
+```
+
+
+```{r}
+
+ptdfplot2018 <- ptdf2 %>%
+  filter(YearMon==c("2018-01","2018-02","2018-03","2018-04","2018-05","2018-06","2018-07","2018-08","2018-09", "2018-10","2018-11","2018-12")) %>%
+  ggplot(aes(x=YearMon, y=n, group=Primary.Type, colour=Primary.Type)) +
+  geom_line() +
+  geom_point(aes(group = seq_along(YearMon))) +
+  scale_colour_manual(values=cbPalette) +
+  theme(legend.position='bottom') +
+  ggtitle ("Top 5 Crime Trends 2018",)
+
+```
+
+
+```{r}
+ptdfplot2018
+```
+
+
+From the plot, you can observe a seasonal peak in Top 5 crimes types during the  month of July and August.
+
+
+
+#  Time Series Analysis of Overall Crimes in Chicago
+
+```{r}
+library(dplyr)
+crimesdf1 <- crimesdf %>%
+  group_by(YearMon) %>%
+  count() %>%
+  ungroup()
+
+crimesdf1_ts <- ts(crimesdf1,start = 2009,end = 2018,frequency = 12)
+
+```    
+
+```{r}
+summary(crimesdf1_ts)
+```
+
+
+
+##  Exponential Smoothing State Space
+
+```{r}
+fit.ets <- ets(log(crimesdf1_ts[,2]))
+plot(fit.ets)
+```
+
+
+```{r}
+summary(fit.ets)
+```
+
+### Decomposition of Time Series
+
+```{r}
+log(crimesdf1_ts[,2]) %>% decompose %>% autoplot
+```
+
+
+### Checking ACF and PACF
+
+ACF(Auto-Correlation Function) - The correlation between the observation at the current time spot and the observations at previous time spots.
+PACF (Partial ACF) - The correlation between observations at two time spots given that we consider both observations are correlated to observations at other time spots.PACF of yesterday is the "real" correlation between today and yesterday after taking out the influence of the day before yesterday.
+
+
+```{r}
+tsdisplay(fit.ets$residuals)
+
+```
+
+
+###  Forecast based on Exponential Smoothing State Space
+
+
+```{r}
+fc.ets <- log(crimesdf1_ts[,2]) %>% ets %>% forecast(h=24)  
+autoplot(log(crimesdf1_ts[,2]), series="Data") + 
+  autolayer(fc.ets, series="Forecast") + 
+  autolayer(fitted(fc.ets), series="Fitted")
+```
+
+
+
+```{r}
+acf(fc.ets$residuals, lag.max = 20)
+```
+
+
+```{r}
+Box.test(fc.ets$residuals, lag=20, type="Ljung-Box")
+```
+The correlogram shows that the autocorrelation for the in-sample forecast errors do not exceed the significance bounds for lags 1-20. Furthermore, the p-value from our Ljung-Box test is 0.62, indicating there is little evidence of a non-zero correlations at lags 1-20.
+
+
+##  ARIMA
+
+```{r}
+fit.arima <- auto.arima(log(crimesdf1_ts[, 2]), stepwise=F, approximation = F)
+summary(fit.arima)
+
+```
+
+
+
+```{r}
+checkresiduals(fit.arima)
+
+```
+
+
+```{r}
+pacf(fit.arima$residuals)
+```
+
+###  Arima Plot
+```{r}
+plot(forecast(fit.arima, h=24))
+```
+
+
+
+
+
+
+# Summary
+
+Is crime generally rising in Chicago in the past decade (last 10 years)?
+
+The overall crimes have been declining from year 2009 to 2016 and somewhat stabilising. For specific crime types such as THEFT, there was however increasing trend after year 2015.
+
+• Is there a seasonal component to the crime rate?
+
+Yes. From  visualising the Top 5 Crimes plots as well as what are reflected from both ETS and ARIMA model summary, we can safely confirm that there is a seasonal component to the crime rate.
+
+
+• Which time series method seems to capture the variation in your time series better? 
+
+It is difficult to decide as both ETS and ARIMA models are approximately close in capturing the variation in the time series.
+
+Explain your choice of algorithm and its key assumptions
+
+Comparing ETS and ARIMA, ARIMA model is my preferred choice of algorithm for its flexibility to adjust the p, d, q values and seasonality as well as availability/flexibility of auto.ARIMA capability.
+
+
+
+#  Appendix: Predict Overall Crimes in Chicago Using Prophet
+
+```{r}
+library(lubridate)
+library(dplyr)
+crimesProphet <- crimes %>%
+  filter(Year!=2019) %>%
+  mutate(Date = Date %>% mdy_hms() %>% as_date()) %>%
+  count(Date) %>%
+  mutate(ds = Date, y = n)
+m <- prophet(crimesProphet)
+
+```
+
+##  Checking for missing values
+
+```{r}
+describe(crimesProphet)
+```
+
+##  Basic Predictions
+
+```{r}
+future <- make_future_dataframe(m, periods = 365 * 2)
+forecast <- predict(m, future)
+
+```
+
+
+```{r}
+summary(forecast)
+```
+
+##  Visualization
+
+```{r}
+crimesProphet_plot <- plot(m, forecast)
+crimesProphet_plotly <- plotly_build(crimesProphet_plot)
+crimesProphet_plotly$layout$height = 400
+crimesProphet_plotly$layout$width = 300
+
+```
+
+```{r}
+crimesProphet_plotly
+```
+
+
+Using the graph we observe the yearly trend and seasonality much clearer and how these are used for making predictions.
+
+
+###  Forecast Components
+
+```{r}
+
+prophet_plot_components(m, forecast)
+```
+
+
+Based on the chart, we can observe a downward annual trend for the overall crimes from 2009 to 2015/2016 and thereafter plateauing till 2018. From a seasonality perspective, the overall crime peaks during the  months of July/August each year. Lastly, on a weekly basis, we can also observe an increasing crimes rate with a spike on Friday and tapering over the weekend.   
+
+
+```{r echo=FALSE}
+prophetFC <- forecast[c('ds', 'yhat', 'yhat_lower', 'yhat_upper')]
+write.csv(prophetFC, "prophetFC.csv")
+```
+
