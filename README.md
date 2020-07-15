@@ -2,6 +2,6 @@
 
 TimeSeriesForecasting.RMD
 
-To predict the crimes in Chicago
+-  To predict the crimes in Chicago
 
 
